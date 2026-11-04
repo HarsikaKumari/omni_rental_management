@@ -1,0 +1,205 @@
+// Prisma schema for RentRoom Manager
+// All money is stored as integer paise. All meter readings use Decimal(12,3).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────── enums ───────────────────────────
+
+enum Role {
+  ADMIN
+  LANDLORD
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum RoomStatus {
+  VACANT
+  OCCUPIED
+}
+
+enum ReadingType {
+  INITIAL
+  MONTHLY
+  FINAL
+}
+
+enum BillType {
+  RENT_AND_ELECTRICITY
+  ELECTRICITY_ONLY
+}
+
+enum BillStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  CARRIED_FORWARD
+}
+
+// ─────────────────────────── models ───────────────────────────
+
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  phone        String
+  passwordHash String
+  role         Role
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  settings    Settings?
+  rooms       Room[]
+  tenants     Tenant[]
+  occupancies Occupancy[]
+  readings    MeterReading[]
+  bills       Bill[]
+  payments    Payment[]
+
+  @@index([role])
+}
+
+model Settings {
+  id               String   @id @default(cuid())
+  landlordId       String   @unique
+  ratePerUnitPaise Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  landlord User @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+}
+
+model Room {
+  id         String     @id @default(cuid())
+  landlordId String
+  roomNumber String
+  status     RoomStatus @default(VACANT)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  landlord    User           @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  occupancies Occupancy[]
+  readings    MeterReading[]
+
+  @@unique([landlordId, roomNumber])
+  @@index([landlordId])
+}
+
+model Tenant {
+  id             String   @id @default(cuid())
+  landlordId     String
+  name           String
+  whatsappNumber String   // E.164, e.g. "+919876543210"
+  idType         String   // "AADHAAR" | "OTHER"
+  idNumber       String
+  photoUrl       String?
+  photoPublicId  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  landlord    User        @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  occupancies Occupancy[]
+
+  @@index([landlordId])
+}
+
+model Occupancy {
+  id               String    @id @default(cuid())
+  landlordId       String
+  tenantId         String
+  roomId           String
+  monthlyRentPaise Int
+  startDate        DateTime
+  endDate          DateTime? // null = active
+  paidTillReading  Decimal   @db.Decimal(12, 3)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  landlord     User           @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  tenant       Tenant         @relation(fields: [tenantId], references: [id])
+  room         Room           @relation(fields: [roomId], references: [id])
+  readings     MeterReading[]
+  bills        Bill[]
+
+  @@index([landlordId])
+  @@index([tenantId])
+  @@index([roomId])
+  @@index([endDate])
+}
+
+model MeterReading {
+  id          String      @id @default(cuid())
+  landlordId  String
+  roomId      String
+  occupancyId String
+  reading     Decimal     @db.Decimal(12, 3)
+  type        ReadingType
+  readingDate DateTime    @default(now())
+  createdAt   DateTime    @default(now())
+
+  landlord  User      @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  room      Room      @relation(fields: [roomId], references: [id])
+  occupancy Occupancy @relation(fields: [occupancyId], references: [id])
+
+  @@index([landlordId])
+  @@index([occupancyId])
+  @@index([roomId])
+  @@index([readingDate])
+}
+
+model Bill {
+  id                     String     @id @default(cuid())
+  landlordId             String
+  occupancyId            String
+  type                   BillType
+  billingMonth           String     // "YYYY-MM"
+  isFinal                Boolean    @default(false)
+  fromReading            Decimal    @db.Decimal(12, 3)
+  toReading              Decimal    @db.Decimal(12, 3)
+  units                  Decimal    @db.Decimal(12, 3)
+  ratePerUnitPaise       Int        // snapshot
+  electricityAmountPaise Int
+  rentAmountPaise        Int        // 0 for ELECTRICITY_ONLY
+  totalPaise             Int
+  status                 BillStatus @default(UNPAID)
+  rentPaid               Boolean    @default(false)
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+
+  landlord  User      @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  occupancy Occupancy @relation(fields: [occupancyId], references: [id])
+  payments  Payment[]
+
+  // one normal + one final bill per occupancy per month (see spec)
+  @@unique([occupancyId, billingMonth, isFinal])
+  @@index([landlordId])
+  @@index([occupancyId])
+  @@index([status])
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  landlordId  String
+  billId      String
+  amountPaise Int
+  paidOn      DateTime @default(now())
+  note        String?
+  createdAt   DateTime @default(now())
+
+  landlord User @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  bill     Bill @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([landlordId])
+  @@index([billId])
+}
