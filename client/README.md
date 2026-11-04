@@ -11,5 +11,3 @@ Multi-tenant SaaS for landlords to track rooms, renters, meter readings, electri
 - **ADMIN** — created only via `npm run seed:admin`. Manages landlords.
 - **LANDLORD** — created by admin. Manages own rooms/tenants/readings/bills.
 - **RENTERS** — non-login records; receive bills via WhatsApp.
-
-## Repo layout
