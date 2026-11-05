@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import LoginPage from "../pages/auth/LoginPage";
 import AdminDashboard from "../pages/admin/AdminDashboard";
+import LandlordsPage from "../pages/admin/LandlordsPage";
 import LandlordDashboard from "../pages/landlord/Dashboard";
 import { ProtectedRoute } from "../components/layout/ProtectedRoute";
 import { useAuth } from "../hooks/useAuth";
@@ -31,6 +32,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute role="ADMIN">
             <AdminDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/landlords"
+        element={
+          <ProtectedRoute role="ADMIN">
+            <LandlordsPage />
           </ProtectedRoute>
         }
       />
