@@ -3,6 +3,8 @@ import LoginPage from "../pages/auth/LoginPage";
 import AdminDashboard from "../pages/admin/AdminDashboard";
 import LandlordsPage from "../pages/admin/LandlordsPage";
 import LandlordDashboard from "../pages/landlord/Dashboard";
+import RoomsPage from "../pages/landlord/Rooms";
+import SettingsPage from "../pages/landlord/Settings";
 import { ProtectedRoute } from "../components/layout/ProtectedRoute";
 import { useAuth } from "../hooks/useAuth";
 
@@ -27,6 +29,7 @@ export function AppRoutes() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
 
+      {/* Admin */}
       <Route
         path="/admin"
         element={
@@ -44,11 +47,28 @@ export function AppRoutes() {
         }
       />
 
+      {/* Landlord */}
       <Route
         path="/landlord"
         element={
           <ProtectedRoute role="LANDLORD">
             <LandlordDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/rooms"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <RoomsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/settings"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <SettingsPage />
           </ProtectedRoute>
         }
       />
