@@ -11,8 +11,8 @@ interface AppShellProps {
 
 /**
  * Mobile-first shell: sticky top bar, scrollable main content, optional
- * bottom nav. The main content is padded to sit above the home indicator
- * on iOS (see index.css safe-area).
+ * bottom nav. When `bottomNav` is provided we add bottom padding so the
+ * nav never covers form buttons.
  */
 export function AppShell({
   title,
@@ -53,7 +53,9 @@ export function AppShell({
           </div>
         </div>
       </header>
-      <main className="flex-1 px-4 py-4">{children}</main>
+      <main className={`flex-1 px-4 py-4 ${bottomNav ? "pb-24" : ""}`}>
+        {children}
+      </main>
       {bottomNav}
     </div>
   );
