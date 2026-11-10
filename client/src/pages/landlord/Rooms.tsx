@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -13,12 +14,7 @@ import {
   Spinner,
 } from "../../components/ui";
 import { getApiErrorMessage } from "../../api/client";
-import {
-  useCreateRoom,
-  useDeleteRoom,
-  useRooms,
-  useUpdateRoom,
-} from "../../hooks/useRooms";
+import { useCreateRoom, useRooms, useUpdateRoom } from "../../hooks/useRooms";
 import type { Room } from "../../types/room";
 
 const schema = z.object({
@@ -26,7 +22,6 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 
-// Natural sort so "Room 2" comes before "Room 10".
 const naturalSort = (a: Room, b: Room) =>
   a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true });
 
@@ -34,7 +29,6 @@ export default function RoomsPage() {
   const roomsQuery = useRooms();
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Room | null>(null);
-  const [deleting, setDeleting] = useState<Room | null>(null);
 
   const sortedRooms = roomsQuery.data
     ? [...roomsQuery.data].sort(naturalSort)
@@ -65,37 +59,37 @@ export default function RoomsPage() {
         {!roomsQuery.isLoading && sortedRooms.length === 0 && (
           <Card>
             <p className="text-sm text-slate-600">
-              No rooms yet. Add your first room to allot it to a renter.
+              Add the rooms you rent out. Rooms stay on this list permanently —
+              you never delete them; only renters change over time.
             </p>
           </Card>
         )}
 
         <div className="space-y-3">
           {sortedRooms.map((room) => (
-            <Card key={room.id}>
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-semibold text-slate-900">
-                  Room {room.roomNumber}
-                </h3>
-                <Badge tone={room.status === "OCCUPIED" ? "blue" : "green"}>
-                  {room.status}
-                </Badge>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setEditing(room)}
+            <Card key={room.id} className="!p-0 overflow-hidden">
+              <div className="flex items-center">
+                <Link
+                  to={`/landlord/rooms/${room.id}`}
+                  className="flex-1 flex items-center gap-2 px-4 py-3 hover:bg-slate-50"
                 >
-                  Edit
-                </Button>
+                  <h3 className="text-base font-semibold text-slate-900">
+                    Room {room.roomNumber}
+                  </h3>
+                  <Badge tone={room.status === "OCCUPIED" ? "blue" : "green"}>
+                    {room.status}
+                  </Badge>
+                  <span className="ml-auto text-slate-400">›</span>
+                </Link>
+              </div>
+              <div className="border-t border-slate-100 px-4 py-2 flex justify-end">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-red-600"
-                  onClick={() => setDeleting(room)}
+                  onClick={() => setEditing(room)}
+                  className="text-slate-600"
                 >
-                  Delete
+                  Edit
                 </Button>
               </div>
             </Card>
@@ -114,7 +108,6 @@ export default function RoomsPage() {
         mode="edit"
         room={editing ?? undefined}
       />
-      <DeleteRoomModal room={deleting} onClose={() => setDeleting(null)} />
     </AppShell>
   );
 }
@@ -202,68 +195,6 @@ function RoomFormModal({
           </div>
         )}
       </form>
-    </Modal>
-  );
-}
-
-function DeleteRoomModal({
-  room,
-  onClose,
-}: {
-  room: Room | null;
-  onClose: () => void;
-}) {
-  const del = useDeleteRoom();
-  const [error, setError] = useState<string | null>(null);
-
-  const close = () => {
-    setError(null);
-    del.reset();
-    onClose();
-  };
-
-  const confirm = async () => {
-    if (!room) return;
-    try {
-      await del.mutateAsync(room.id);
-      close();
-    } catch (err) {
-      setError(getApiErrorMessage(err));
-    }
-  };
-
-  return (
-    <Modal
-      open={!!room}
-      onClose={close}
-      title="Delete room?"
-      footer={
-        <>
-          <Button variant="ghost" onClick={close} type="button">
-            Cancel
-          </Button>
-          <Button variant="danger" onClick={confirm} loading={del.isPending}>
-            Delete
-          </Button>
-        </>
-      }
-    >
-      {room && (
-        <div className="space-y-2 text-sm text-slate-700">
-          <p>
-            Delete <strong>Room {room.roomNumber}</strong>?
-          </p>
-          <p className="text-slate-500">
-            Rooms with any renter history (past or current) cannot be deleted —
-            this preserves your records.
-          </p>
-          {error && (
-            <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </div>
-          )}
-        </div>
-      )}
     </Modal>
   );
 }
