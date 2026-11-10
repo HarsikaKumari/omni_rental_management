@@ -163,14 +163,14 @@ model Bill {
   landlordId             String
   occupancyId            String
   type                   BillType
-  billingMonth           String     // "YYYY-MM"
+  billingMonth           String
   isFinal                Boolean    @default(false)
   fromReading            Decimal    @db.Decimal(12, 3)
   toReading              Decimal    @db.Decimal(12, 3)
   units                  Decimal    @db.Decimal(12, 3)
-  ratePerUnitPaise       Int        // snapshot
+  ratePerUnitPaise       Int
   electricityAmountPaise Int
-  rentAmountPaise        Int        // 0 for ELECTRICITY_ONLY
+  rentAmountPaise        Int
   totalPaise             Int
   status                 BillStatus @default(UNPAID)
   rentPaid               Boolean    @default(false)
@@ -181,7 +181,6 @@ model Bill {
   occupancy Occupancy @relation(fields: [occupancyId], references: [id])
   payments  Payment[]
 
-  // one normal + one final bill per occupancy per month (see spec)
   @@unique([occupancyId, billingMonth, isFinal])
   @@index([landlordId])
   @@index([occupancyId])
