@@ -3,107 +3,118 @@ import { prisma } from '../config/prisma';
 import { ApiError } from '../utils/ApiError';
 import { asyncHandler } from '../utils/asyncHandler';
 
-const roomPublicSelect = {
-    id: true,
-    roomNumber: true,
-    status: true,
-    createdAt: true,
+const roomListSelect = {
+  id: true,
+  roomNumber: true,
+  status: true,
+  createdAt: true,
+} as const;
+
+// Tenant safe fields only — never expose idNumber here.
+const occupancySummarySelect = {
+  id: true,
+  startDate: true,
+  endDate: true,
+  monthlyRentPaise: true,
+  tenant: {
+    select: {
+      id: true,
+      name: true,
+      whatsappNumber: true,
+      photoUrl: true,
+    },
+  },
 } as const;
 
 // Every handler gets landlordId from the JWT — never from req.body/params/query.
 
 export const listRooms = asyncHandler(async (req: Request, res: Response) => {
-    const landlordId = req.user!.id;
+  const landlordId = req.user!.id;
 
-    const rooms = await prisma.room.findMany({
-        where: { landlordId },
-        orderBy: { roomNumber: 'asc' },
-        select: roomPublicSelect,
-    });
+  const rooms = await prisma.room.findMany({
+    where: { landlordId },
+    orderBy: { roomNumber: 'asc' },
+    select: roomListSelect,
+  });
 
-    res.json({ rooms });
+  res.json({ rooms });
 });
 
+/**
+ * Returns the room plus:
+ *   - current:  the active occupancy (endDate = null) with tenant info, or null
+ *   - history:  past occupancies for THIS room, newest first (bounded to 50)
+ *
+ * This is what powers the "renter history of a room" view.
+ */
 export const getRoom = asyncHandler(async (req: Request, res: Response) => {
-    const landlordId = req.user!.id;
-    const { id } = req.params as { id: string };
+  const landlordId = req.user!.id;
+  const { id } = req.params as { id: string };
 
-    // findFirst (not findUnique) so we can constrain landlordId in the same query.
-    const room = await prisma.room.findFirst({
-        where: { id, landlordId },
-        select: roomPublicSelect,
-    });
-    if (!room) throw ApiError.notFound('Room not found');
+  // findFirst, never findUnique — landlordId must be part of the WHERE.
+  const room = await prisma.room.findFirst({
+    where: { id, landlordId },
+    select: roomListSelect,
+  });
+  if (!room) throw ApiError.notFound('Room not found');
 
-    res.json({ room });
+  // One query, split in memory — cheaper than two round-trips and keeps
+  // current + history in a consistent sort order.
+  const occupancies = await prisma.occupancy.findMany({
+    where: { roomId: id, landlordId },
+    orderBy: { startDate: 'desc' },
+    take: 50,
+    select: occupancySummarySelect,
+  });
+
+  const current = occupancies.find((o) => o.endDate === null) ?? null;
+  const history = occupancies.filter((o) => o.endDate !== null);
+
+  res.json({ room: { ...room, current, history } });
 });
 
 export const createRoom = asyncHandler(async (req: Request, res: Response) => {
-    const landlordId = req.user!.id;
-    const { roomNumber } = req.body as { roomNumber: string };
+  const landlordId = req.user!.id;
+  const { roomNumber } = req.body as { roomNumber: string };
 
-    // Friendly 409 instead of a raw Prisma unique-violation error.
-    const existing = await prisma.room.findFirst({
-        where: { landlordId, roomNumber },
-        select: { id: true },
-    });
-    if (existing) throw ApiError.conflict(`Room ${roomNumber} already exists`);
+  const existing = await prisma.room.findFirst({
+    where: { landlordId, roomNumber },
+    select: { id: true },
+  });
+  if (existing) throw ApiError.conflict(`Room ${roomNumber} already exists`);
 
-    const room = await prisma.room.create({
-        data: { landlordId, roomNumber, status: 'VACANT' },
-        select: roomPublicSelect,
-    });
+  const room = await prisma.room.create({
+    data: { landlordId, roomNumber, status: 'VACANT' },
+    select: roomListSelect,
+  });
 
-    res.status(201).json({ room });
+  res.status(201).json({ room });
 });
 
 export const updateRoom = asyncHandler(async (req: Request, res: Response) => {
-    const landlordId = req.user!.id;
-    const { id } = req.params as { id: string };
-    const { roomNumber } = req.body as { roomNumber?: string };
+  const landlordId = req.user!.id;
+  const { id } = req.params as { id: string };
+  const { roomNumber } = req.body as { roomNumber?: string };
 
-    const target = await prisma.room.findFirst({
-        where: { id, landlordId },
-        select: { id: true },
+  const target = await prisma.room.findFirst({
+    where: { id, landlordId },
+    select: { id: true },
+  });
+  if (!target) throw ApiError.notFound('Room not found');
+
+  if (roomNumber) {
+    const clash = await prisma.room.findFirst({
+      where: { landlordId, roomNumber, NOT: { id } },
+      select: { id: true },
     });
-    if (!target) throw ApiError.notFound('Room not found');
+    if (clash) throw ApiError.conflict(`Room ${roomNumber} already exists`);
+  }
 
-    if (roomNumber) {
-        const clash = await prisma.room.findFirst({
-            where: { landlordId, roomNumber, NOT: { id } },
-            select: { id: true },
-        });
-        if (clash) throw ApiError.conflict(`Room ${roomNumber} already exists`);
-    }
+  const room = await prisma.room.update({
+    where: { id },
+    data: { roomNumber },
+    select: roomListSelect,
+  });
 
-    const room = await prisma.room.update({
-        where: { id },
-        data: { roomNumber },
-        select: roomPublicSelect,
-    });
-
-    res.json({ room });
-});
-
-export const deleteRoom = asyncHandler(async (req: Request, res: Response) => {
-    const landlordId = req.user!.id;
-    const { id } = req.params as { id: string };
-
-    const target = await prisma.room.findFirst({
-        where: { id, landlordId },
-        select: { id: true },
-    });
-    if (!target) throw ApiError.notFound('Room not found');
-
-    // Rooms that ever had a renter are part of history — occupancies reference
-    // roomId, so deleting would break previous-renters views. Block it.
-    const occupancyCount = await prisma.occupancy.count({ where: { roomId: id } });
-    if (occupancyCount > 0) {
-        throw ApiError.conflict(
-            'This room has history (past or current renters) and cannot be deleted.',
-        );
-    }
-
-    await prisma.room.delete({ where: { id } });
-    res.json({ ok: true });
+  res.json({ room });
 });
