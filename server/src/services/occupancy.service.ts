@@ -1,17 +1,12 @@
-import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { ApiError } from '../utils/ApiError';
+import {
+    calculateBill,
+    toBillingMonth,
+} from './billing.service';
+import type { BillType } from '@prisma/client';
 
-/**
- * NOTE ON TRANSACTIONS:
- *   - shiftRoom and moveOut both use prisma.$transaction with an interactive
- *     callback so every read (latest reading check) and every write happen in
- *     one atomic scope.
- *   - We return plain objects with `Number(Decimal)` so responses serialize
- *     cleanly over JSON.
- *   - All ownership checks happen INSIDE the transaction using landlordId
- *     from the JWT — never trust anything else.
- */
+// ─── shiftRoom (unchanged from Phase 5) ─────────────────────────
 
 interface ShiftInput {
     occupancyId: string;
@@ -24,19 +19,10 @@ interface ShiftInput {
     confirmedRollover?: boolean;
 }
 
-interface MoveOutInput {
-    occupancyId: string;
-    landlordId: string;
-    finalReading: number;
-    moveOutDate?: Date;
-    confirmedRollover?: boolean;
-}
-
 export async function shiftRoom(input: ShiftInput) {
     const shiftDate = input.shiftDate ?? new Date();
 
     return prisma.$transaction(async (tx) => {
-        // 1. Current occupancy must be active and belong to landlord.
         const current = await tx.occupancy.findFirst({
             where: { id: input.occupancyId, landlordId: input.landlordId, endDate: null },
             select: {
@@ -48,12 +34,10 @@ export async function shiftRoom(input: ShiftInput) {
             },
         });
         if (!current) throw ApiError.notFound('Active occupancy not found');
-
         if (current.roomId === input.newRoomId) {
             throw ApiError.badRequest('New room is the same as the current room');
         }
 
-        // 2. New room must belong to landlord and be VACANT.
         const newRoom = await tx.room.findFirst({
             where: { id: input.newRoomId, landlordId: input.landlordId },
             select: { id: true, status: true },
@@ -61,29 +45,26 @@ export async function shiftRoom(input: ShiftInput) {
         if (!newRoom) throw ApiError.notFound('New room not found');
         if (newRoom.status !== 'VACANT') throw ApiError.conflict('New room is already occupied');
 
-        // 3. Final reading must be ≥ latest reading on this occupancy (or rollover confirmed).
         const latest = await tx.meterReading.findFirst({
             where: { occupancyId: current.id },
-            orderBy: { readingDate: 'desc' },
+            orderBy: [{ readingDate: 'desc' }, { createdAt: 'desc' }],
             select: { reading: true },
         });
-        const latestValue = latest ? Number(latest.reading) : Number(current.paidTillReading);
-        if (input.oldRoomFinalReading < latestValue && !input.confirmedRollover) {
+        const latestVal = latest ? Number(latest.reading) : Number(current.paidTillReading);
+        if (input.oldRoomFinalReading < latestVal && !input.confirmedRollover) {
             throw new ApiError(
                 422,
                 'Final reading is lower than the latest recorded reading. Confirm meter rollover to proceed.',
                 'METER_ROLLOVER_UNCONFIRMED',
-                { latestReading: latestValue },
+                { latestReading: latestVal },
             );
         }
 
-        // 4. Close current occupancy.
         await tx.occupancy.update({
             where: { id: current.id },
             data: { endDate: shiftDate },
         });
 
-        // 5. FINAL reading on the old room.
         await tx.meterReading.create({
             data: {
                 landlordId: input.landlordId,
@@ -95,7 +76,6 @@ export async function shiftRoom(input: ShiftInput) {
             },
         });
 
-        // 6. Open new occupancy for the same tenant in the new room.
         const newOccupancy = await tx.occupancy.create({
             data: {
                 landlordId: input.landlordId,
@@ -115,7 +95,6 @@ export async function shiftRoom(input: ShiftInput) {
             },
         });
 
-        // 7. INITIAL reading on the new room.
         await tx.meterReading.create({
             data: {
                 landlordId: input.landlordId,
@@ -127,15 +106,8 @@ export async function shiftRoom(input: ShiftInput) {
             },
         });
 
-        // 8. Flip room statuses.
-        await tx.room.update({
-            where: { id: current.roomId },
-            data: { status: 'VACANT' },
-        });
-        await tx.room.update({
-            where: { id: input.newRoomId },
-            data: { status: 'OCCUPIED' },
-        });
+        await tx.room.update({ where: { id: current.roomId }, data: { status: 'VACANT' } });
+        await tx.room.update({ where: { id: input.newRoomId }, data: { status: 'OCCUPIED' } });
 
         return {
             occupancy: {
@@ -146,40 +118,54 @@ export async function shiftRoom(input: ShiftInput) {
     });
 }
 
+// ─── moveOut (now generates a final bill) ───────────────────────
+
+interface MoveOutInput {
+    occupancyId: string;
+    landlordId: string;
+    finalReading: number;
+    moveOutDate?: Date;
+    confirmedRollover?: boolean;
+    /** If set, a final bill is generated in the same transaction. */
+    finalBillType?: BillType;
+}
+
 export async function moveOut(input: MoveOutInput) {
     const moveOutDate = input.moveOutDate ?? new Date();
 
     return prisma.$transaction(async (tx) => {
-        // 1. Active occupancy for this landlord.
         const occ = await tx.occupancy.findFirst({
             where: { id: input.occupancyId, landlordId: input.landlordId, endDate: null },
-            select: { id: true, roomId: true, paidTillReading: true },
+            select: {
+                id: true,
+                roomId: true,
+                monthlyRentPaise: true,
+                paidTillReading: true,
+            },
         });
         if (!occ) throw ApiError.notFound('Active occupancy not found');
 
-        // 2. Final reading ≥ latest reading (or rollover confirmed).
         const latest = await tx.meterReading.findFirst({
             where: { occupancyId: occ.id },
-            orderBy: { readingDate: 'desc' },
+            orderBy: [{ readingDate: 'desc' }, { createdAt: 'desc' }],
             select: { reading: true },
         });
-        const latestValue = latest ? Number(latest.reading) : Number(occ.paidTillReading);
-        if (input.finalReading < latestValue && !input.confirmedRollover) {
+        const latestVal = latest ? Number(latest.reading) : Number(occ.paidTillReading);
+        if (input.finalReading < latestVal && !input.confirmedRollover) {
             throw new ApiError(
                 422,
                 'Final reading is lower than the latest recorded reading. Confirm meter rollover to proceed.',
                 'METER_ROLLOVER_UNCONFIRMED',
-                { latestReading: latestValue },
+                { latestReading: latestVal },
             );
         }
 
-        // 3. Close occupancy.
+        // Close occupancy + FINAL reading
         await tx.occupancy.update({
             where: { id: occ.id },
             data: { endDate: moveOutDate },
         });
 
-        // 4. FINAL reading.
         await tx.meterReading.create({
             data: {
                 landlordId: input.landlordId,
@@ -191,21 +177,61 @@ export async function moveOut(input: MoveOutInput) {
             },
         });
 
-        // 5. Vacate room.
-        await tx.room.update({
-            where: { id: occ.roomId },
-            data: { status: 'VACANT' },
-        });
+        // Generate final bill if requested
+        let finalBillId: string | null = null;
+        if (input.finalBillType) {
+            const settings = await tx.settings.findUnique({
+                where: { landlordId: input.landlordId },
+                select: { ratePerUnitPaise: true },
+            });
+            if (!settings || settings.ratePerUnitPaise <= 0) {
+                throw ApiError.badRequest(
+                    'Set your electricity rate in Settings before moving out with a final bill',
+                );
+            }
 
-        return { occupancyId: occ.id, roomId: occ.roomId };
+            const calc = calculateBill({
+                fromReading: Number(occ.paidTillReading),
+                toReading: input.finalReading,
+                ratePerUnitPaise: settings.ratePerUnitPaise,
+                monthlyRentPaise: occ.monthlyRentPaise,
+                type: input.finalBillType,
+            });
+
+            await tx.bill.updateMany({
+                where: { occupancyId: occ.id, status: { in: ['UNPAID', 'PARTIAL'] } },
+                data: { status: 'CARRIED_FORWARD' },
+            });
+
+            const finalBill = await tx.bill.create({
+                data: {
+                    landlordId: input.landlordId,
+                    occupancyId: occ.id,
+                    type: input.finalBillType,
+                    billingMonth: toBillingMonth(moveOutDate),
+                    isFinal: true,
+                    fromReading: Number(occ.paidTillReading),
+                    toReading: input.finalReading,
+                    units: calc.units,
+                    ratePerUnitPaise: settings.ratePerUnitPaise,
+                    electricityAmountPaise: calc.electricityAmountPaise,
+                    rentAmountPaise: calc.rentAmountPaise,
+                    totalPaise: calc.totalPaise,
+                    status: calc.totalPaise === 0 ? 'PAID' : 'UNPAID',
+                },
+                select: { id: true },
+            });
+            finalBillId = finalBill.id;
+        }
+
+        await tx.room.update({ where: { id: occ.roomId }, data: { status: 'VACANT' } });
+
+        return { occupancyId: occ.id, roomId: occ.roomId, finalBillId };
     });
 }
 
-/**
- * Build the tenant+occupancy+reading records in one transaction.
- * Called from the tenant controller AFTER the photo has been uploaded
- * (so a DB failure only needs the photo cleaned up, not vice versa).
- */
+// ─── createTenantWithOccupancy (unchanged) ──────────────────────
+
 interface CreateTenantWithOccupancyInput {
     landlordId: string;
     name: string;
@@ -222,7 +248,6 @@ interface CreateTenantWithOccupancyInput {
 
 export async function createTenantWithOccupancy(input: CreateTenantWithOccupancyInput) {
     return prisma.$transaction(async (tx) => {
-        // 1. Room must be owned and VACANT.
         const room = await tx.room.findFirst({
             where: { id: input.roomId, landlordId: input.landlordId },
             select: { id: true, status: true },
@@ -230,7 +255,6 @@ export async function createTenantWithOccupancy(input: CreateTenantWithOccupancy
         if (!room) throw ApiError.notFound('Room not found');
         if (room.status !== 'VACANT') throw ApiError.conflict('Room is already occupied');
 
-        // 2. Tenant.
         const tenant = await tx.tenant.create({
             data: {
                 landlordId: input.landlordId,
@@ -244,7 +268,6 @@ export async function createTenantWithOccupancy(input: CreateTenantWithOccupancy
             select: { id: true, name: true, whatsappNumber: true, idType: true, idNumber: true },
         });
 
-        // 3. Occupancy — paidTillReading starts equal to the initial reading.
         const occupancy = await tx.occupancy.create({
             data: {
                 landlordId: input.landlordId,
@@ -264,7 +287,6 @@ export async function createTenantWithOccupancy(input: CreateTenantWithOccupancy
             },
         });
 
-        // 4. INITIAL meter reading.
         await tx.meterReading.create({
             data: {
                 landlordId: input.landlordId,
@@ -276,7 +298,6 @@ export async function createTenantWithOccupancy(input: CreateTenantWithOccupancy
             },
         });
 
-        // 5. Room becomes OCCUPIED.
         await tx.room.update({ where: { id: input.roomId }, data: { status: 'OCCUPIED' } });
 
         return {
@@ -285,6 +306,3 @@ export async function createTenantWithOccupancy(input: CreateTenantWithOccupancy
         };
     });
 }
-
-// Reference Prisma type so unused-import linting doesn't strip it if used later.
-export type _Prisma = Prisma.TransactionClient;

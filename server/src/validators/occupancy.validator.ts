@@ -20,4 +20,5 @@ export const moveOutSchema = z.object({
     finalReading: readingSchema,
     moveOutDate: z.coerce.date().optional(),
     confirmedRollover: z.coerce.boolean().optional(),
+    finalBillType: z.enum(['RENT_AND_ELECTRICITY', 'ELECTRICITY_ONLY']).optional(),
 });
