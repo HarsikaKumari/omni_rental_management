@@ -1,10 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { roomsApi } from '../api/rooms';
 
-const KEY = ['landlord', 'rooms'] as const;
+const LIST_KEY = ['landlord', 'rooms'] as const;
+const detailKey = (id: string) => ['landlord', 'rooms', id] as const;
 
 export function useRooms() {
-    return useQuery({ queryKey: KEY, queryFn: roomsApi.list });
+    return useQuery({ queryKey: LIST_KEY, queryFn: roomsApi.list });
+}
+
+export function useRoom(id: string) {
+    return useQuery({
+        queryKey: detailKey(id),
+        queryFn: () => roomsApi.get(id),
+        enabled: !!id,
+    });
 }
 
 export function useCreateRoom() {
@@ -12,7 +21,7 @@ export function useCreateRoom() {
     return useMutation({
         mutationFn: (roomNumber: string) => roomsApi.create(roomNumber),
         onSuccess: () => {
-            qc.invalidateQueries({ queryKey: KEY });
+            qc.invalidateQueries({ queryKey: LIST_KEY });
         },
     });
 }
@@ -22,18 +31,9 @@ export function useUpdateRoom() {
     return useMutation({
         mutationFn: ({ id, roomNumber }: { id: string; roomNumber: string }) =>
             roomsApi.update(id, roomNumber),
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: KEY });
-        },
-    });
-}
-
-export function useDeleteRoom() {
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: (id: string) => roomsApi.remove(id),
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: KEY });
+        onSuccess: (_, vars) => {
+            qc.invalidateQueries({ queryKey: LIST_KEY });
+            qc.invalidateQueries({ queryKey: detailKey(vars.id) });
         },
     });
 }
