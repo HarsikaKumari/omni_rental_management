@@ -1,9 +1,9 @@
 import { NavLink } from "react-router-dom";
 
-// Extend this list in later phases as /tenants and /bills become available.
 const items = [
   { to: "/landlord", label: "Home", icon: "🏠", end: true },
   { to: "/landlord/rooms", label: "Rooms", icon: "🚪", end: false },
+  { to: "/landlord/tenants", label: "Renters", icon: "👤", end: false },
   { to: "/landlord/settings", label: "Settings", icon: "⚙️", end: false },
 ];
 
