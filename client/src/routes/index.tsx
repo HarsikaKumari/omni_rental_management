@@ -9,6 +9,8 @@ import TenantsPage from "../pages/landlord/Tenants";
 import TenantDetailPage from "../pages/landlord/TenantDetail";
 import AddRenterPage from "../pages/landlord/AddRenter";
 import PreviousTenantsPage from "../pages/landlord/PreviousTenants";
+import BillingPage from "../pages/landlord/Billing";
+import BillDetailPage from "../pages/landlord/BillDetail";
 import SettingsPage from "../pages/landlord/Settings";
 import { ProtectedRoute } from "../components/layout/ProtectedRoute";
 import { useAuth } from "../hooks/useAuth";
@@ -34,7 +36,6 @@ export function AppRoutes() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="/login" element={<LoginPage />} />
 
-      {/* Admin */}
       <Route
         path="/admin"
         element={
@@ -52,7 +53,6 @@ export function AppRoutes() {
         }
       />
 
-      {/* Landlord */}
       <Route
         path="/landlord"
         element={
@@ -106,6 +106,22 @@ export function AppRoutes() {
         element={
           <ProtectedRoute role="LANDLORD">
             <TenantDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/bills"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <BillingPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/bills/:id"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <BillDetailPage />
           </ProtectedRoute>
         }
       />
