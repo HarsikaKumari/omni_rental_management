@@ -5,6 +5,10 @@ import LandlordsPage from "../pages/admin/LandlordsPage";
 import LandlordDashboard from "../pages/landlord/Dashboard";
 import RoomsPage from "../pages/landlord/Rooms";
 import RoomDetailPage from "../pages/landlord/RoomDetail";
+import TenantsPage from "../pages/landlord/Tenants";
+import TenantDetailPage from "../pages/landlord/TenantDetail";
+import AddRenterPage from "../pages/landlord/AddRenter";
+import PreviousTenantsPage from "../pages/landlord/PreviousTenants";
 import SettingsPage from "../pages/landlord/Settings";
 import { ProtectedRoute } from "../components/layout/ProtectedRoute";
 import { useAuth } from "../hooks/useAuth";
@@ -70,6 +74,38 @@ export function AppRoutes() {
         element={
           <ProtectedRoute role="LANDLORD">
             <RoomDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/tenants"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <TenantsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/tenants/new"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <AddRenterPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/tenants/previous"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <PreviousTenantsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/tenants/:id"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <TenantDetailPage />
           </ProtectedRoute>
         }
       />
