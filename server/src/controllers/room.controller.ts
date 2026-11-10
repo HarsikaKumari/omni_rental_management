@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { prisma } from '../config/prisma';
 import { ApiError } from '../utils/ApiError';
 import { asyncHandler } from '../utils/asyncHandler';
+import { getSignedPhotoUrl } from '../services/image.service';
 
 const roomListSelect = {
   id: true,
@@ -10,7 +11,7 @@ const roomListSelect = {
   createdAt: true,
 } as const;
 
-// Tenant safe fields only — never expose idNumber here.
+// Tenant safe fields only. idNumber is NOT included in this view.
 const occupancySummarySelect = {
   id: true,
   startDate: true,
@@ -21,45 +22,37 @@ const occupancySummarySelect = {
       id: true,
       name: true,
       whatsappNumber: true,
-      photoUrl: true,
+      photoPublicId: true,
     },
   },
 } as const;
 
-// Every handler gets landlordId from the JWT — never from req.body/params/query.
+function presentOccupancy<T extends { tenant: { photoPublicId: string | null } }>(o: T) {
+  const { tenant, ...rest } = o;
+  const { photoPublicId, ...tenantRest } = tenant;
+  return { ...rest, tenant: { ...tenantRest, photoUrl: getSignedPhotoUrl(photoPublicId) } };
+}
 
 export const listRooms = asyncHandler(async (req: Request, res: Response) => {
   const landlordId = req.user!.id;
-
   const rooms = await prisma.room.findMany({
     where: { landlordId },
     orderBy: { roomNumber: 'asc' },
     select: roomListSelect,
   });
-
   res.json({ rooms });
 });
 
-/**
- * Returns the room plus:
- *   - current:  the active occupancy (endDate = null) with tenant info, or null
- *   - history:  past occupancies for THIS room, newest first (bounded to 50)
- *
- * This is what powers the "renter history of a room" view.
- */
 export const getRoom = asyncHandler(async (req: Request, res: Response) => {
   const landlordId = req.user!.id;
   const { id } = req.params as { id: string };
 
-  // findFirst, never findUnique — landlordId must be part of the WHERE.
   const room = await prisma.room.findFirst({
     where: { id, landlordId },
     select: roomListSelect,
   });
   if (!room) throw ApiError.notFound('Room not found');
 
-  // One query, split in memory — cheaper than two round-trips and keeps
-  // current + history in a consistent sort order.
   const occupancies = await prisma.occupancy.findMany({
     where: { roomId: id, landlordId },
     orderBy: { startDate: 'desc' },
@@ -70,7 +63,13 @@ export const getRoom = asyncHandler(async (req: Request, res: Response) => {
   const current = occupancies.find((o) => o.endDate === null) ?? null;
   const history = occupancies.filter((o) => o.endDate !== null);
 
-  res.json({ room: { ...room, current, history } });
+  res.json({
+    room: {
+      ...room,
+      current: current ? presentOccupancy(current) : null,
+      history: history.map(presentOccupancy),
+    },
+  });
 });
 
 export const createRoom = asyncHandler(async (req: Request, res: Response) => {
@@ -87,7 +86,6 @@ export const createRoom = asyncHandler(async (req: Request, res: Response) => {
     data: { landlordId, roomNumber, status: 'VACANT' },
     select: roomListSelect,
   });
-
   res.status(201).json({ room });
 });
 
@@ -115,6 +113,5 @@ export const updateRoom = asyncHandler(async (req: Request, res: Response) => {
     data: { roomNumber },
     select: roomListSelect,
   });
-
   res.json({ room });
 });
