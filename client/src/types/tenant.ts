@@ -74,4 +74,6 @@ export interface MoveOutInput {
     finalReading: number;
     moveOutDate?: string;
     confirmedRollover?: boolean;
+    finalBillType?: 'RENT_AND_ELECTRICITY' | 'ELECTRICITY_ONLY';
 }
+

@@ -9,6 +9,7 @@ const schema = z.object({
   finalReading: z.number({ invalid_type_error: "Enter a number" }).min(0),
   moveOutDate: z.string().optional(),
   confirmedRollover: z.boolean().optional(),
+  finalBillType: z.enum(["RENT_AND_ELECTRICITY", "ELECTRICITY_ONLY", "NONE"]),
 });
 type FormValues = z.infer<typeof schema>;
 
@@ -42,6 +43,7 @@ export function MoveOutModal({
       finalReading: undefined as unknown as number,
       moveOutDate: todayIsoDate(),
       confirmedRollover: false,
+      finalBillType: "RENT_AND_ELECTRICITY",
     },
   });
 
@@ -61,6 +63,8 @@ export function MoveOutModal({
             ? new Date(values.moveOutDate).toISOString()
             : undefined,
           confirmedRollover: values.confirmedRollover,
+          finalBillType:
+            values.finalBillType === "NONE" ? undefined : values.finalBillType,
         },
       });
       close();
@@ -110,6 +114,24 @@ export function MoveOutModal({
           {...register("finalReading", { valueAsNumber: true })}
         />
         <Input label="Move-out date" type="date" {...register("moveOutDate")} />
+
+        <div>
+          <label className="block text-sm font-medium text-slate-700">
+            Final bill
+          </label>
+          <select
+            {...register("finalBillType")}
+            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base"
+          >
+            <option value="RENT_AND_ELECTRICITY">Rent + Electricity</option>
+            <option value="ELECTRICITY_ONLY">Electricity only</option>
+            <option value="NONE">Do not generate a bill</option>
+          </select>
+          <p className="mt-1 text-xs text-slate-500">
+            A final bill captures the last units used and any pending rent.
+          </p>
+        </div>
+
         <label className="flex items-start gap-2 text-xs text-slate-600">
           <input
             type="checkbox"

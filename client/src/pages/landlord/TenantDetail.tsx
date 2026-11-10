@@ -2,37 +2,33 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AppShell } from "../../components/layout/AppShell";
 import { LandlordNav } from "../../components/layout/LandlordNav";
-import {
-  Badge,
-  Button,
-  Card,
-  Input,
-  Modal,
-  Spinner,
-} from "../../components/ui";
+import { Badge, Button, Card, Spinner } from "../../components/ui";
 import { getApiErrorMessage } from "../../api/client";
 import {
   useRemoveTenantPhoto,
   useTenant,
   useUpdateTenantPhoto,
 } from "../../hooks/useTenants";
-import { useMoveOut, useShiftRoom } from "../../hooks/useOccupancies";
 import { useRooms } from "../../hooks/useRooms";
-import { formatRupees, rupeesToPaise } from "../../utils/money";
+import { useSettings } from "../../hooks/useSettings";
+import { formatRupees } from "../../utils/money";
 import { formatDate, formatDateRange } from "../../utils/format";
 import { maskIdNumber } from "../../utils/mask";
 import { MoveOutModal } from "../../components/tenants/MoveOutModal";
 import { ShiftRoomModal } from "../../components/tenants/ShiftRoomModal";
+import { GenerateBillModal } from "../../components/bills/GenerateBillModal";
 
 export default function TenantDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const tenant = useTenant(id);
   const rooms = useRooms();
+  const settings = useSettings();
   const updatePhoto = useUpdateTenantPhoto();
   const removePhoto = useRemoveTenantPhoto();
   const [shiftOpen, setShiftOpen] = useState(false);
   const [moveOutOpen, setMoveOutOpen] = useState(false);
+  const [billOpen, setBillOpen] = useState(false);
 
   const active =
     tenant.data?.occupancies.find((o) => o.endDate === null) ?? null;
@@ -130,8 +126,17 @@ export default function TenantDetailPage() {
                     </p>
                     <p>Since {formatDate(active.startDate)}</p>
                     <p>Rent {formatRupees(active.monthlyRentPaise)} / month</p>
+                    <p>Paid-till reading: {active.paidTillReading}</p>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => setBillOpen(true)}
+                      disabled={(settings.data?.ratePerUnitPaise ?? 0) <= 0}
+                    >
+                      Generate bill
+                    </Button>
                     <Button
                       variant="secondary"
                       size="sm"
@@ -147,6 +152,12 @@ export default function TenantDetailPage() {
                       Move out
                     </Button>
                   </div>
+                  {(settings.data?.ratePerUnitPaise ?? 0) <= 0 && (
+                    <p className="mt-2 text-xs text-amber-700">
+                      Set your electricity rate in Settings before generating
+                      bills.
+                    </p>
+                  )}
                 </>
               ) : (
                 <p className="mt-2 text-sm text-slate-600">
@@ -203,6 +214,14 @@ export default function TenantDetailPage() {
                   onClose={() => setMoveOutOpen(false)}
                   occupancyId={active.id}
                   onMovedOut={() => navigate("/landlord/tenants")}
+                />
+                <GenerateBillModal
+                  open={billOpen}
+                  onClose={() => setBillOpen(false)}
+                  occupancyId={active.id}
+                  roomNumber={active.room.roomNumber}
+                  paidTillReading={active.paidTillReading}
+                  ratePerUnitPaise={settings.data?.ratePerUnitPaise ?? 0}
                 />
               </>
             )}
