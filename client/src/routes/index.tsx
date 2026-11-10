@@ -4,6 +4,7 @@ import AdminDashboard from "../pages/admin/AdminDashboard";
 import LandlordsPage from "../pages/admin/LandlordsPage";
 import LandlordDashboard from "../pages/landlord/Dashboard";
 import RoomsPage from "../pages/landlord/Rooms";
+import RoomDetailPage from "../pages/landlord/RoomDetail";
 import SettingsPage from "../pages/landlord/Settings";
 import { ProtectedRoute } from "../components/layout/ProtectedRoute";
 import { useAuth } from "../hooks/useAuth";
@@ -61,6 +62,14 @@ export function AppRoutes() {
         element={
           <ProtectedRoute role="LANDLORD">
             <RoomsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/landlord/rooms/:id"
+        element={
+          <ProtectedRoute role="LANDLORD">
+            <RoomDetailPage />
           </ProtectedRoute>
         }
       />
