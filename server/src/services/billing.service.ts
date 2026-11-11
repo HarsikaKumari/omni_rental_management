@@ -1,66 +1,23 @@
-import type { BillType, Prisma } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma';
 import { ApiError } from '../utils/ApiError';
+import {
+    calculateBill,
+    computeBillStatus,
+    computeUnits,
+    toBillingMonth,
+} from './billing.calc';
 
-// ─── Pure, unit-testable helpers ────────────────────────────────
+// Re-export pure helpers so existing imports from billing.service still work.
+export {
+    calculateBill,
+    computeBillStatus,
+    computeUnits,
+    toBillingMonth,
+};
+export type { BillCalcInput, BillCalcResult, ComputedStatus } from './billing.calc';
 
-export type ComputedStatus = 'UNPAID' | 'PARTIAL' | 'PAID';
-
-export interface BillCalcInput {
-    fromReading: number;
-    toReading: number;
-    ratePerUnitPaise: number;
-    monthlyRentPaise: number;
-    type: BillType;
-}
-
-export interface BillCalcResult {
-    units: number;
-    electricityAmountPaise: number;
-    rentAmountPaise: number;
-    totalPaise: number;
-}
-
-/**
- * Electricity = round(units * rate). Rent is only added for
- * RENT_AND_ELECTRICITY bills. Never use floats for money beyond this point.
- */
-export function calculateBill(input: BillCalcInput): BillCalcResult {
-    if (input.toReading < input.fromReading) {
-        throw new Error('toReading must be >= fromReading');
-    }
-    const units = input.toReading - input.fromReading;
-    const electricityAmountPaise = Math.round(units * input.ratePerUnitPaise);
-    const rentAmountPaise =
-        input.type === 'RENT_AND_ELECTRICITY' ? input.monthlyRentPaise : 0;
-    const totalPaise = electricityAmountPaise + rentAmountPaise;
-    return { units, electricityAmountPaise, rentAmountPaise, totalPaise };
-}
-
-/**
- * Bill status derivation. `paidTillReading` lives on the occupancy and is
- * the single source of truth for how much electricity has been paid.
- */
-export function computeBillStatus(
-    bill: { type: BillType; fromReading: number; toReading: number; rentPaid: boolean },
-    paidTillReading: number,
-): ComputedStatus {
-    const electricityFullyPaid = paidTillReading >= bill.toReading;
-    const electricityPartiallyPaid = paidTillReading > bill.fromReading;
-    const rentConsidered = bill.type === 'ELECTRICITY_ONLY' || bill.rentPaid;
-
-    if (electricityFullyPaid && rentConsidered) return 'PAID';
-    if (electricityPartiallyPaid || bill.rentPaid) return 'PARTIAL';
-    return 'UNPAID';
-}
-
-export function toBillingMonth(date: Date): string {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    return `${y}-${m}`;
-}
-
-// ─── Internal helper (used inside transactions only) ────────────
+// ─── internal helpers (need prisma tx) ──────────────────────────
 
 async function recomputeBillStatuses(
     tx: Prisma.TransactionClient,
@@ -115,13 +72,13 @@ async function latestReadingValue(
     return latest ? Number(latest.reading) : fallback;
 }
 
-// ─── Generate a bill (transaction) ──────────────────────────────
+// ─── generate a bill (transaction) ──────────────────────────────
 
 export interface GenerateBillInput {
     occupancyId: string;
     landlordId: string;
-    type: BillType;
-    billingMonth: string; // YYYY-MM
+    type: 'RENT_AND_ELECTRICITY' | 'ELECTRICITY_ONLY';
+    billingMonth: string;
     currentReading: number;
     confirmedRollover?: boolean;
 }
@@ -143,7 +100,6 @@ export async function generateBill(input: GenerateBillInput) {
             throw ApiError.badRequest('billingMonth must be YYYY-MM');
         }
 
-        // Block duplicate normal bills for the same month (spec).
         const dup = await tx.bill.findFirst({
             where: { occupancyId: occ.id, billingMonth: input.billingMonth, isFinal: false },
             select: { id: true },
@@ -152,7 +108,7 @@ export async function generateBill(input: GenerateBillInput) {
 
         const settings = await tx.settings.findUnique({
             where: { landlordId: input.landlordId },
-            select: { ratePerUnitPaise: true },
+            select: { ratePerUnitPaise: true, meterCapacity: true },
         });
         if (!settings || settings.ratePerUnitPaise <= 0) {
             throw ApiError.badRequest('Set your electricity rate in Settings first');
@@ -160,24 +116,40 @@ export async function generateBill(input: GenerateBillInput) {
 
         const paidTill = Number(occ.paidTillReading);
         const latestVal = await latestReadingValue(tx, occ.id, paidTill);
-        if (input.currentReading < latestVal && !input.confirmedRollover) {
-            throw new ApiError(
-                422,
-                'Reading is lower than the latest recorded reading. Confirm meter rollover to proceed.',
-                'METER_ROLLOVER_UNCONFIRMED',
-                { latestReading: latestVal },
+
+        // Reading must not be behind the latest recorded reading (rollover-aware).
+        const unitsToLatest = computeUnits(paidTill, latestVal, settings.meterCapacity);
+        const unitsToNew = computeUnits(paidTill, input.currentReading, settings.meterCapacity);
+        if (unitsToNew < unitsToLatest) {
+            throw ApiError.badRequest(
+                `Reading is behind the latest recorded reading (${latestVal}).`,
             );
         }
 
-        const calc = calculateBill({
-            fromReading: paidTill,
-            toReading: input.currentReading,
-            ratePerUnitPaise: settings.ratePerUnitPaise,
-            monthlyRentPaise: occ.monthlyRentPaise,
-            type: input.type,
-        });
+        // calculateBill itself throws if rollover is required but not confirmed.
+        let calc;
+        try {
+            calc = calculateBill({
+                fromReading: paidTill,
+                toReading: input.currentReading,
+                ratePerUnitPaise: settings.ratePerUnitPaise,
+                monthlyRentPaise: occ.monthlyRentPaise,
+                type: input.type,
+                meterCapacity: settings.meterCapacity,
+                confirmedRollover: input.confirmedRollover,
+            });
+        } catch (err) {
+            if (err instanceof Error && err.message.includes('rollover')) {
+                throw new ApiError(
+                    422,
+                    'Reading is lower than paid-till reading. Confirm meter rollover to proceed.',
+                    'METER_ROLLOVER_UNCONFIRMED',
+                    { paidTillReading: paidTill, meterCapacity: settings.meterCapacity },
+                );
+            }
+            throw err;
+        }
 
-        // 1. Persist the reading that justifies this bill.
         await tx.meterReading.create({
             data: {
                 landlordId: input.landlordId,
@@ -188,14 +160,11 @@ export async function generateBill(input: GenerateBillInput) {
             },
         });
 
-        // 2. Carry forward older unpaid/partial bills BEFORE creating the new one,
-        //    so the new bill itself doesn't get flipped to CARRIED_FORWARD.
         await tx.bill.updateMany({
             where: { occupancyId: occ.id, status: { in: ['UNPAID', 'PARTIAL'] } },
             data: { status: 'CARRIED_FORWARD' },
         });
 
-        // 3. Create the new bill.
         const bill = await tx.bill.create({
             data: {
                 landlordId: input.landlordId,
@@ -219,7 +188,7 @@ export async function generateBill(input: GenerateBillInput) {
     });
 }
 
-// ─── Paid-till reading (transaction) ────────────────────────────
+// ─── paid-till (rollover-aware) ─────────────────────────────────
 
 export interface PaidTillInput {
     billId: string;
@@ -241,19 +210,25 @@ export async function recordPaidTill(input: PaidTillInput) {
         });
         if (!occ) throw ApiError.notFound('Occupancy not found');
 
+        const settings = await tx.settings.findUnique({
+            where: { landlordId: input.landlordId },
+            select: { meterCapacity: true },
+        });
+        const capacity = settings?.meterCapacity ?? 99999;
+
         const currentPaidTill = Number(occ.paidTillReading);
-        if (input.paidTillReading < currentPaidTill) {
-            throw ApiError.badRequest(
-                `Paid-till cannot be lower than current paid-till (${currentPaidTill})`,
-            );
-        }
         const latestVal = await latestReadingValue(tx, occ.id, currentPaidTill);
-        if (input.paidTillReading > latestVal) {
+
+        // Rollover-aware comparison: computeUnits handles the "X < paidTill" wrap.
+        const unitsToX = computeUnits(currentPaidTill, input.paidTillReading, capacity);
+        const unitsToLatest = computeUnits(currentPaidTill, latestVal, capacity);
+
+        if (unitsToX > unitsToLatest) {
             throw ApiError.badRequest(
-                `Paid-till cannot exceed the latest reading (${latestVal})`,
+                `Paid-till cannot exceed the latest reading (${latestVal}).`,
             );
         }
-        if (input.paidTillReading === currentPaidTill) {
+        if (unitsToX === 0) {
             return { ok: true, alreadyAtReading: currentPaidTill };
         }
 
@@ -262,15 +237,14 @@ export async function recordPaidTill(input: PaidTillInput) {
             data: { paidTillReading: input.paidTillReading },
         });
 
-        const unitsPaid = input.paidTillReading - currentPaidTill;
-        const amountPaise = Math.round(unitsPaid * bill.ratePerUnitPaise);
+        const amountPaise = Math.round(unitsToX * bill.ratePerUnitPaise);
         if (amountPaise > 0) {
             await tx.payment.create({
                 data: {
                     landlordId: input.landlordId,
                     billId: bill.id,
                     amountPaise,
-                    note: `Paid till reading ${input.paidTillReading} (${unitsPaid} units)`,
+                    note: `Paid till reading ${input.paidTillReading} (${unitsToX} units)`,
                 },
             });
         }
@@ -280,7 +254,7 @@ export async function recordPaidTill(input: PaidTillInput) {
     });
 }
 
-// ─── Mark fully paid (elec + rent) ──────────────────────────────
+// ─── mark fully paid ────────────────────────────────────────────
 
 export async function markFullyPaid(billId: string, landlordId: string) {
     return prisma.$transaction(async (tx) => {
@@ -302,9 +276,7 @@ export async function markFullyPaid(billId: string, landlordId: string) {
                 'Cannot mark fully paid on a carried-forward bill. Use "Mark rent paid" or pay the current bill.',
             );
         }
-        if (bill.status === 'PAID') {
-            return { ok: true, alreadyPaid: true };
-        }
+        if (bill.status === 'PAID') return { ok: true, alreadyPaid: true };
 
         const occ = await tx.occupancy.findFirst({
             where: { id: bill.occupancyId, landlordId },
@@ -312,16 +284,22 @@ export async function markFullyPaid(billId: string, landlordId: string) {
         });
         if (!occ) throw ApiError.notFound('Occupancy not found');
 
+        const settings = await tx.settings.findUnique({
+            where: { landlordId },
+            select: { meterCapacity: true },
+        });
+        const capacity = settings?.meterCapacity ?? 99999;
+
         const currentPaidTill = Number(occ.paidTillReading);
         const latestVal = await latestReadingValue(tx, occ.id, currentPaidTill);
 
-        if (latestVal > currentPaidTill) {
+        const unitsOutstanding = computeUnits(currentPaidTill, latestVal, capacity);
+        if (unitsOutstanding > 0) {
             await tx.occupancy.update({
                 where: { id: occ.id },
                 data: { paidTillReading: latestVal },
             });
-            const unitsPaid = latestVal - currentPaidTill;
-            const amountPaise = Math.round(unitsPaid * bill.ratePerUnitPaise);
+            const amountPaise = Math.round(unitsOutstanding * bill.ratePerUnitPaise);
             if (amountPaise > 0) {
                 await tx.payment.create({
                     data: {
@@ -351,7 +329,7 @@ export async function markFullyPaid(billId: string, landlordId: string) {
     });
 }
 
-// ─── Mark rent paid (one-way) ───────────────────────────────────
+// ─── mark rent paid ─────────────────────────────────────────────
 
 export async function markRentPaid(billId: string, landlordId: string) {
     return prisma.$transaction(async (tx) => {
@@ -369,9 +347,7 @@ export async function markRentPaid(billId: string, landlordId: string) {
         if (bill.type !== 'RENT_AND_ELECTRICITY') {
             throw ApiError.badRequest('This bill has no rent component');
         }
-        if (bill.rentPaid) {
-            return { ok: true, alreadyPaid: true };
-        }
+        if (bill.rentPaid) return { ok: true, alreadyPaid: true };
 
         await tx.bill.update({ where: { id: bill.id }, data: { rentPaid: true } });
         if (bill.rentAmountPaise > 0) {
@@ -390,7 +366,7 @@ export async function markRentPaid(billId: string, landlordId: string) {
     });
 }
 
-// ─── Manual payment (log only, no status change) ────────────────
+// ─── manual payment ─────────────────────────────────────────────
 
 export interface AddPaymentInput {
     landlordId: string;
