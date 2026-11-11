@@ -1,26 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { useNavigate } from "react-router-dom";
-import { Button, Input, Modal } from "../ui";
-import { getApiErrorMessage } from "../../api/client";
-import { billsApi } from "../../api/bills";
-import { useGenerateBill } from "../../hooks/useBills";
-import { formatRupees } from "../../utils/money";
-import type { BillPreview } from "../../types/bill";
+import { useEffect, useMemo, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import { useNavigate } from 'react-router-dom';
+import { Button, Input, Modal } from '../ui';
+import { getApiErrorMessage } from '../../api/client';
+import { billsApi } from '../../api/bills';
+import { useGenerateBill } from '../../hooks/useBills';
+import { formatRupees } from '../../utils/money';
+import type { BillPreview } from '../../types/bill';
 
 const schema = z.object({
-  type: z.enum(["RENT_AND_ELECTRICITY", "ELECTRICITY_ONLY"]),
-  billingMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Pick a month"),
-  currentReading: z.number({ invalid_type_error: "Enter a number" }).min(0),
+  type: z.enum(['RENT_AND_ELECTRICITY', 'ELECTRICITY_ONLY']),
+  billingMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Pick a month'),
+  currentReading: z.number({ invalid_type_error: 'Enter a number' }).min(0),
   confirmedRollover: z.boolean().optional(),
 });
 type FormValues = z.infer<typeof schema>;
 
 function currentBillingMonth(): string {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 export interface GenerateBillModalProps {
@@ -30,7 +30,8 @@ export interface GenerateBillModalProps {
   roomNumber: string;
   paidTillReading: number;
   ratePerUnitPaise: number;
-  defaultType?: "RENT_AND_ELECTRICITY" | "ELECTRICITY_ONLY";
+  meterCapacity: number;
+  defaultType?: 'RENT_AND_ELECTRICITY' | 'ELECTRICITY_ONLY';
 }
 
 export function GenerateBillModal({
@@ -40,7 +41,8 @@ export function GenerateBillModal({
   roomNumber,
   paidTillReading,
   ratePerUnitPaise,
-  defaultType = "RENT_AND_ELECTRICITY",
+  meterCapacity,
+  defaultType = 'RENT_AND_ELECTRICITY',
 }: GenerateBillModalProps) {
   const navigate = useNavigate();
   const generate = useGenerateBill();
@@ -64,21 +66,24 @@ export function GenerateBillModal({
     },
   });
 
-  const watchType = watch("type");
-  const watchReading = watch("currentReading");
+  const watchType = watch('type');
+  const watchReading = watch('currentReading');
 
-  // Debounced local preview — no network; mirrors server calc to keep the UI instant.
+  // Local preview mirrors server-side rollover math.
   const localPreview = useMemo(() => {
     if (!Number.isFinite(watchReading) || watchReading < 0) return null;
-    if (ratePerUnitPaise <= 0) return null;
-    const units = Math.max(0, watchReading - paidTillReading);
+    if (ratePerUnitPaise <= 0 || meterCapacity <= 0) return null;
+    const isRollover = watchReading < paidTillReading;
+    const units = isRollover
+      ? meterCapacity - paidTillReading + watchReading
+      : watchReading - paidTillReading;
     return {
       units,
+      isRollover,
       electricityAmountPaise: Math.round(units * ratePerUnitPaise),
     };
-  }, [watchReading, paidTillReading, ratePerUnitPaise]);
+  }, [watchReading, paidTillReading, ratePerUnitPaise, meterCapacity]);
 
-  // Fetch authoritative preview (validates rollover) once input settles.
   useEffect(() => {
     if (!open) return;
     if (!Number.isFinite(watchReading) || watchReading < 0) return;
@@ -119,7 +124,7 @@ export function GenerateBillModal({
       close();
       navigate(`/landlord/bills/${result.billId}`);
     } catch (err) {
-      setError("root", { message: getApiErrorMessage(err) });
+      setError('root', { message: getApiErrorMessage(err) });
     }
   };
 
@@ -139,23 +144,16 @@ export function GenerateBillModal({
         </>
       }
     >
-      <form
-        id="gen-bill-form"
-        className="space-y-3"
-        onSubmit={handleSubmit(onSubmit)}
-        noValidate
-      >
+      <form id="gen-bill-form" className="space-y-3" onSubmit={handleSubmit(onSubmit)} noValidate>
         <p className="text-xs text-slate-500">
-          Room {roomNumber} · paid till reading{" "}
-          <strong>{paidTillReading}</strong>
+          Room {roomNumber} · paid till reading <strong>{paidTillReading}</strong> · capacity{' '}
+          {meterCapacity}
         </p>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700">
-            Bill type
-          </label>
+          <label className="block text-sm font-medium text-slate-700">Bill type</label>
           <select
-            {...register("type")}
+            {...register('type')}
             className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base"
           >
             <option value="RENT_AND_ELECTRICITY">Rent + Electricity</option>
@@ -167,7 +165,7 @@ export function GenerateBillModal({
           label="Billing month"
           type="month"
           error={errors.billingMonth?.message}
-          {...register("billingMonth")}
+          {...register('billingMonth')}
         />
 
         <Input
@@ -176,13 +174,15 @@ export function GenerateBillModal({
           inputMode="decimal"
           step="0.01"
           error={errors.currentReading?.message}
-          {...register("currentReading", { valueAsNumber: true })}
+          {...register('currentReading', { valueAsNumber: true })}
         />
 
         {localPreview && (
           <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
             <div className="flex justify-between">
-              <span>Units</span>
+              <span>
+                Units{localPreview.isRollover ? ' (with rollover)' : ''}
+              </span>
               <span className="font-medium">{localPreview.units}</span>
             </div>
             <div className="flex justify-between">
@@ -194,33 +194,32 @@ export function GenerateBillModal({
           </div>
         )}
 
+        {localPreview?.isRollover && (
+          <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Reading is lower than paid-till. This will be interpreted as a meter rollover
+            (meter wrapped past {meterCapacity}). Confirm below.
+          </div>
+        )}
+
         {previewError && (
           <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             {previewError}
           </div>
         )}
 
-        {preview && !preview.valid && (
+        {(preview?.requiresRolloverConfirmation || localPreview?.isRollover) && (
           <label className="flex items-start gap-2 text-xs text-amber-700">
-            <input
-              type="checkbox"
-              {...register("confirmedRollover")}
-              className="mt-0.5"
-            />
-            <span>
-              Confirm meter rollover — new reading is lower than the latest
-              recorded ({preview.latestReading}).
-            </span>
+            <input type="checkbox" {...register('confirmedRollover')} className="mt-0.5" />
+            <span>Confirm meter rollover</span>
           </label>
         )}
 
-        {preview && preview.previousRentDuePaise > 0 && (
+        {preview?.previousRentDuePaise ? (
           <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            Previous rent due: {formatRupees(preview.previousRentDuePaise)}{" "}
-            (carried from older unpaid bills). This is not added to the new
-            bill's total.
+            Previous rent due: {formatRupees(preview.previousRentDuePaise)} (from carried
+            bills; not added to the new bill).
           </div>
-        )}
+        ) : null}
 
         {errors.root && (
           <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">

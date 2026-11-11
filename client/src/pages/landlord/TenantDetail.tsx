@@ -222,6 +222,7 @@ export default function TenantDetailPage() {
                   roomNumber={active.room.roomNumber}
                   paidTillReading={active.paidTillReading}
                   ratePerUnitPaise={settings.data?.ratePerUnitPaise ?? 0}
+                  meterCapacity={settings.data?.meterCapacity ?? 99999}
                 />
               </>
             )}
