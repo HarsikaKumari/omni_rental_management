@@ -2,15 +2,15 @@ import type { Request, Response } from 'express';
 import { prisma } from '../config/prisma';
 import { ApiError } from '../utils/ApiError';
 import { asyncHandler } from '../utils/asyncHandler';
+import { calculateBill, computeUnits } from '../services/billing.calc';
 import {
-    calculateBill,
     generateBill,
     markFullyPaid,
     markRentPaid,
     recordPaidTill,
 } from '../services/billing.service';
 
-// ── preview (read-only) ─────────────────────────────────────────
+// ─── preview (read-only, rollover-aware) ────────────────────────
 
 export const previewBill = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
@@ -28,7 +28,7 @@ export const previewBill = asyncHandler(async (req: Request, res: Response) => {
 
     const settings = await prisma.settings.findUnique({
         where: { landlordId },
-        select: { ratePerUnitPaise: true },
+        select: { ratePerUnitPaise: true, meterCapacity: true },
     });
     if (!settings || settings.ratePerUnitPaise <= 0) {
         throw ApiError.badRequest('Set your electricity rate in Settings first');
@@ -42,15 +42,26 @@ export const previewBill = asyncHandler(async (req: Request, res: Response) => {
     const latestVal = latest ? Number(latest.reading) : Number(occ.paidTillReading);
 
     const paidTill = Number(occ.paidTillReading);
+    const capacity = settings.meterCapacity;
+
+    // Rollover-aware checks (mirrors generateBill).
+    const unitsToLatest = computeUnits(paidTill, latestVal, capacity);
+    const unitsToNew = computeUnits(paidTill, currentReading, capacity);
+    const readingBehindLatest = unitsToNew < unitsToLatest;
+    const requiresRolloverConfirmation = currentReading < paidTill && latestVal >= paidTill;
+
+    // Compute what a bill WOULD look like if generated with rollover confirmed.
     const calc = calculateBill({
         fromReading: paidTill,
         toReading: currentReading,
         ratePerUnitPaise: settings.ratePerUnitPaise,
         monthlyRentPaise: occ.monthlyRentPaise,
         type,
+        meterCapacity: capacity,
+        confirmedRollover: true,
     });
 
-    // Prior unpaid rent (from carried-forward bills) shown as "previous due".
+    // Prior unpaid rent carried from older bills — shown as "previous due".
     const carried = await prisma.bill.findMany({
         where: {
             occupancyId: occ.id,
@@ -69,18 +80,21 @@ export const previewBill = asyncHandler(async (req: Request, res: Response) => {
             toReading: currentReading,
             units: calc.units,
             ratePerUnitPaise: settings.ratePerUnitPaise,
+            meterCapacity: capacity,
             electricityAmountPaise: calc.electricityAmountPaise,
             rentAmountPaise: calc.rentAmountPaise,
             totalPaise: calc.totalPaise,
             latestReading: latestVal,
-            valid: currentReading >= latestVal,
+            valid: !readingBehindLatest,
+            readingBehindLatest,
+            requiresRolloverConfirmation,
             previousRentDuePaise,
             previousRentDueBills: carried,
         },
     });
 });
 
-// ── generate ────────────────────────────────────────────────────
+// ─── generate ───────────────────────────────────────────────────
 
 export const createBill = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
@@ -96,7 +110,7 @@ export const createBill = asyncHandler(async (req: Request, res: Response) => {
     res.status(201).json(result);
 });
 
-// ── list ────────────────────────────────────────────────────────
+// ─── list ───────────────────────────────────────────────────────
 
 export const listBills = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
@@ -111,7 +125,11 @@ export const listBills = asyncHandler(async (req: Request, res: Response) => {
             landlordId,
             ...(occupancyId ? { occupancyId } : {}),
             ...(status && status.length
-                ? { status: { in: status as ('UNPAID' | 'PARTIAL' | 'PAID' | 'CARRIED_FORWARD')[] } }
+                ? {
+                    status: {
+                        in: status as ('UNPAID' | 'PARTIAL' | 'PAID' | 'CARRIED_FORWARD')[],
+                    },
+                }
                 : {}),
         },
         orderBy: { createdAt: 'desc' },
@@ -155,7 +173,7 @@ export const listBills = asyncHandler(async (req: Request, res: Response) => {
     });
 });
 
-// ── get one ─────────────────────────────────────────────────────
+// ─── get one ────────────────────────────────────────────────────
 
 export const getBill = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
@@ -232,7 +250,7 @@ export const getBill = asyncHandler(async (req: Request, res: Response) => {
     });
 });
 
-// ── paid-till ───────────────────────────────────────────────────
+// ─── paid-till ──────────────────────────────────────────────────
 
 export const paidTill = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
@@ -243,7 +261,7 @@ export const paidTill = asyncHandler(async (req: Request, res: Response) => {
     res.json(result);
 });
 
-// ── mark fully paid ─────────────────────────────────────────────
+// ─── mark fully paid ────────────────────────────────────────────
 
 export const markPaid = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
@@ -252,7 +270,7 @@ export const markPaid = asyncHandler(async (req: Request, res: Response) => {
     res.json(result);
 });
 
-// ── mark rent paid ──────────────────────────────────────────────
+// ─── mark rent paid ─────────────────────────────────────────────
 
 export const rentPaid = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
