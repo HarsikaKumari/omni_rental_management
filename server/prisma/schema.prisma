@@ -74,6 +74,7 @@ model Settings {
   id               String   @id @default(cuid())
   landlordId       String   @unique
   ratePerUnitPaise Int
+  meterCapacity    Int      @default(99999)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
