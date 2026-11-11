@@ -10,7 +10,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test": "tsx --test src/services/billing.calc.test.ts"
   },
   "prisma": {
     "seed": "tsx src/scripts/seedAdmin.ts"
