@@ -8,12 +8,14 @@ import occupanciesRoutes from './occupancies.routes';
 import readingsRoutes from './readings.routes';
 import billsRoutes from './bills.routes';
 import paymentsRoutes from './payments.routes';
+import dashboardRoutes from './dashboard.routes';
 
 const router = Router();
 
 router.get('/health', (_req, res) => res.json({ ok: true }));
 router.use('/auth', authRoutes);
 router.use('/admin', adminRoutes);
+router.use('/dashboard', dashboardRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/rooms', roomsRoutes);
 router.use('/tenants', tenantsRoutes);
