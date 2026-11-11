@@ -2,8 +2,9 @@ import { prisma } from '../config/prisma';
 import { ApiError } from '../utils/ApiError';
 import {
     calculateBill,
+    computeUnits,
     toBillingMonth,
-} from './billing.service';
+} from './billing.calc';
 import type { BillType } from '@prisma/client';
 
 // ─── shiftRoom (unchanged from Phase 5) ─────────────────────────
@@ -126,7 +127,6 @@ interface MoveOutInput {
     finalReading: number;
     moveOutDate?: Date;
     confirmedRollover?: boolean;
-    /** If set, a final bill is generated in the same transaction. */
     finalBillType?: BillType;
 }
 
@@ -151,16 +151,32 @@ export async function moveOut(input: MoveOutInput) {
             select: { reading: true },
         });
         const latestVal = latest ? Number(latest.reading) : Number(occ.paidTillReading);
-        if (input.finalReading < latestVal && !input.confirmedRollover) {
-            throw new ApiError(
-                422,
-                'Final reading is lower than the latest recorded reading. Confirm meter rollover to proceed.',
-                'METER_ROLLOVER_UNCONFIRMED',
-                { latestReading: latestVal },
+        const paidTill = Number(occ.paidTillReading);
+
+        // Fetch capacity for rollover-aware validation.
+        const settings = await tx.settings.findUnique({
+            where: { landlordId: input.landlordId },
+            select: { ratePerUnitPaise: true, meterCapacity: true },
+        });
+        const capacity = settings?.meterCapacity ?? 99999;
+
+        const unitsToLatest = computeUnits(paidTill, latestVal, capacity);
+        const unitsToNew = computeUnits(paidTill, input.finalReading, capacity);
+        if (unitsToNew < unitsToLatest) {
+            throw ApiError.badRequest(
+                `Final reading is behind the latest recorded reading (${latestVal}).`,
             );
         }
 
-        // Close occupancy + FINAL reading
+        if (input.finalReading < paidTill && latestVal >= paidTill && !input.confirmedRollover) {
+            throw new ApiError(
+                422,
+                'Final reading is lower than the paid-till reading. Confirm meter rollover to proceed.',
+                'METER_ROLLOVER_UNCONFIRMED',
+                { paidTillReading: paidTill, meterCapacity: capacity },
+            );
+        }
+
         await tx.occupancy.update({
             where: { id: occ.id },
             data: { endDate: moveOutDate },
@@ -177,13 +193,8 @@ export async function moveOut(input: MoveOutInput) {
             },
         });
 
-        // Generate final bill if requested
         let finalBillId: string | null = null;
         if (input.finalBillType) {
-            const settings = await tx.settings.findUnique({
-                where: { landlordId: input.landlordId },
-                select: { ratePerUnitPaise: true },
-            });
             if (!settings || settings.ratePerUnitPaise <= 0) {
                 throw ApiError.badRequest(
                     'Set your electricity rate in Settings before moving out with a final bill',
@@ -191,11 +202,13 @@ export async function moveOut(input: MoveOutInput) {
             }
 
             const calc = calculateBill({
-                fromReading: Number(occ.paidTillReading),
+                fromReading: paidTill,
                 toReading: input.finalReading,
                 ratePerUnitPaise: settings.ratePerUnitPaise,
                 monthlyRentPaise: occ.monthlyRentPaise,
                 type: input.finalBillType,
+                meterCapacity: capacity,
+                confirmedRollover: input.confirmedRollover,
             });
 
             await tx.bill.updateMany({
@@ -210,7 +223,7 @@ export async function moveOut(input: MoveOutInput) {
                     type: input.finalBillType,
                     billingMonth: toBillingMonth(moveOutDate),
                     isFinal: true,
-                    fromReading: Number(occ.paidTillReading),
+                    fromReading: paidTill,
                     toReading: input.finalReading,
                     units: calc.units,
                     ratePerUnitPaise: settings.ratePerUnitPaise,
