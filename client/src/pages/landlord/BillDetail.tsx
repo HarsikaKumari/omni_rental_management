@@ -12,6 +12,7 @@ import {
 import { formatRupees } from "../../utils/money";
 import { formatDate } from "../../utils/format";
 import { PaidTillModal } from "../../components/bills/PaidTillModal";
+import { WhatsAppButton } from "../../components/bills/WhatsAppButton";
 
 const statusTone: Record<string, "red" | "amber" | "green" | "slate"> = {
   UNPAID: "red",
@@ -143,6 +144,8 @@ export default function BillDetailPage() {
             )}
 
             <div className="flex flex-wrap gap-2">
+              <WhatsAppButton bill={bill.data} />
+
               {bill.data.status !== "PAID" &&
                 bill.data.status !== "CARRIED_FORWARD" && (
                   <>
@@ -171,6 +174,7 @@ export default function BillDetailPage() {
                     </Button>
                   </>
                 )}
+
               {bill.data.type === "RENT_AND_ELECTRICITY" &&
                 !bill.data.rentPaid && (
                   <Button
