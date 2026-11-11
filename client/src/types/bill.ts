@@ -48,11 +48,14 @@ export interface BillPreview {
     toReading: number;
     units: number;
     ratePerUnitPaise: number;
+    meterCapacity: number;
     electricityAmountPaise: number;
     rentAmountPaise: number;
     totalPaise: number;
     latestReading: number;
     valid: boolean;
+    readingBehindLatest: boolean;
+    requiresRolloverConfirmation: boolean;
     previousRentDuePaise: number;
     previousRentDueBills: { id: string; billingMonth: string; rentAmountPaise: number }[];
 }

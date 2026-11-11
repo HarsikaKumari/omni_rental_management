@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { settingsApi } from '../api/settings';
+import type { UpdateSettingsInput } from '../types/settings';
 
 const KEY = ['landlord', 'settings'] as const;
 
@@ -10,10 +11,8 @@ export function useSettings() {
 export function useUpdateSettings() {
     const qc = useQueryClient();
     return useMutation({
-        mutationFn: (ratePerUnitPaise: number) => settingsApi.update(ratePerUnitPaise),
+        mutationFn: (input: UpdateSettingsInput) => settingsApi.update(input),
         onSuccess: (data) => {
-            // Server already returns the new settings object — write it directly
-            // instead of invalidating, so the dashboard rate updates instantly.
             qc.setQueryData(KEY, data);
         },
     });
