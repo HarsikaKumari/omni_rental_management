@@ -278,7 +278,15 @@ export async function createTenantWithOccupancy(input: CreateTenantWithOccupancy
                 photoUrl: input.photoUrl,
                 photoPublicId: input.photoPublicId,
             },
-            select: { id: true, name: true, whatsappNumber: true, idType: true, idNumber: true },
+            select: {
+                id: true,
+                name: true,
+                whatsappNumber: true,
+                idType: true,
+                idNumber: true,
+                photoPublicId: true,
+                createdAt: true,
+            },
         });
 
         const occupancy = await tx.occupancy.create({

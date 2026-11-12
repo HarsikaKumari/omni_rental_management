@@ -114,7 +114,7 @@ export const createBill = asyncHandler(async (req: Request, res: Response) => {
 
 export const listBills = asyncHandler(async (req: Request, res: Response) => {
     const landlordId = req.user!.id;
-    const { status, occupancyId, limit } = req.query as {
+    const { status, occupancyId, limit } = req.query as unknown as {
         status?: string[];
         occupancyId?: string;
         limit: number;
